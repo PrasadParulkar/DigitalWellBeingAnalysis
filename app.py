@@ -1,110 +1,86 @@
-"""
-Digital Balance — Manual 3‑Level Classifier (Derived Features)
-=============================================================
-This **Streamlit** app aligns with Phase 1’s derived columns:
-* Four granular usage inputs (Social, Video, Gaming, Messaging) → **Total Digital Activity**
-* **Digital Overuse** flag = "Overuse" when total > 8 h, else "Normal"
-
-The model still expects six columns, so we auto‑compute **Screen Time** (as the sum) plus the derived fields, then feed those to `phase2_model.pkl`.
-
-Folder
-------
-```
-src/phase4/
-│   app.py
-│   requirements.txt
-└── artifacts/
-    └── phase2_model.pkl
-```
-Run:
-```bash
-cd src/phase4
-pip install -r requirements.txt
-streamlit run app.py
-```
-"""
 from __future__ import annotations
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import json
 from pathlib import Path
-import joblib
+from catboost import CatBoostClassifier
 
-# ── Config & model ─────────────────────────────────────────────
-ART_DIR = Path(__file__).parent / "artifacts"
-MODEL_PATH = ART_DIR / "phase2_model.pkl"
+# ── CONFIG ────────────────────────────────────────────────────────────────
+ART_DIR    = Path(__file__).parent / "artifacts"
+MODEL_PATH = ART_DIR / "catboost_dbp.cbm"
+META_PATH  = ART_DIR / "dbp_meta.json"
 
-st.set_page_config(page_title="Digital Balance Classifier", layout="wide", page_icon="🎯")
-st.title("🎯 Digital Balance — 3‑Level Well‑Being Classifier")
+st.set_page_config(
+    page_title="Digital Wellbeing Classifier",
+    layout="wide",
+    page_icon="🎯"
+)
+st.title("🎯 Digital Wellbeing Classifier")
 
-if not MODEL_PATH.exists():
-    st.error("phase2_model.pkl missing — add it under src/phase4/artifacts/")
+if not MODEL_PATH.exists() or not META_PATH.exists():
+    st.error("Missing `catboost_dbp.cbm` or `dbp_meta.json` in `artifacts/`.")
     st.stop()
 
-@st.cache_resource(show_spinner=False)
-def load_model(path: Path):
-    return joblib.load(path)
+@st.cache_resource
+def load_model_and_meta():
+    m = CatBoostClassifier()
+    m.load_model(str(MODEL_PATH))
+    meta = json.loads(META_PATH.read_text())
+    return m, meta
 
-pipe = load_model(MODEL_PATH)
-
-# ── Helper maps ────────────────────────────────────────────────
-CLASS_MAP = {
-    "Low":    (1, 4,  "#e45756"),   # 1.0 ≤ score  < 4.0
-    "Medium": (4, 8,  "#f1ab00"),   # 4.0 ≤ score  < 8.0
-    "High":   (8, 10.1, "#4caf50")  # 8.0 ≤ score ≤ 10.0
+model, meta      = load_model_and_meta()
+thresholds       = np.array(meta["thresholds"])
+feature_columns  = meta["features"]
+CLASS_LABELS     = {0: "Low", 1: "Medium", 2: "High"}
+ADVICE_BY_CLASS  = {
+    "Low":    "• Limit screen time below 6 h/day  \n• Add 30 min exercise  \n• Mute notifications before sleep",
+    "Medium": "• Stay balanced with app timers  \n• Track mood & sleep weekly",
+    "High":   "Great balance! Keep up the good habits ✨"
 }
 
-def score_to_class(score: float) -> str:
-    for label, (lo, hi, _) in CLASS_MAP.items():
-        if lo <= score < hi:        #  ←  use < hi   (not ≤)
-            return label
-    return "Unknown"
+# ── USER INPUTS ──────────────────────────────────────────────────────────
+st.subheader("Enter Your Daily Metrics")
+sm_time   = st.number_input("Daily Social Media Time (hrs)",   0.0, 24.0, 2.0, 0.25)
+ent_time  = st.number_input("Daily Entertainment Time (hrs)",  0.0, 24.0, 1.0, 0.25)
+screen    = st.number_input("Screen Time (hrs)",               0.0, 24.0, 4.0, 0.25)
+sleep     = st.number_input("Average Sleep Time (hrs)",       0.0, 24.0, 7.0, 0.25)
+activity  = st.number_input("Physical Activity Time (hrs)",    0.0, 24.0, 1.0, 0.25)
+notifications = st.number_input("Notifications Received Daily", 0, 1000, 50, 1)
 
-def advice(label: str) -> str:
-    return {
-        "Low":    "* Limit screen time below 6 h / day\n* Add 30 min exercise\n* Mute notifications before sleep",
-        "Medium": "* Stay balanced with app timers\n* Track mood & sleep weekly",
-        "High":   "Great balance! Keep up the good habits ✨"
-    }.get(label, "")
+# ── OVERUSE FLAG ─────────────────────────────────────────────────────────
+overuse = screen > 8
+flag_txt = "🚩 Overuse" if overuse else "✅ Normal"
+st.markdown(f"**Screen-time Flag:** {flag_txt}")
 
-# ── Manual input form ──────────────────────────────────────────
-st.subheader("Enter today’s digital‑use metrics (hrs)")
-col1, col2 = st.columns(2)
-with col1:
-    sm_time   = st.number_input("Social Media",   0.0, 24.0, 2.0, 0.25)
-    video     = st.number_input("Video Content",  0.0, 24.0, 1.0, 0.25)
-with col2:
-    gaming    = st.number_input("Gaming",         0.0, 24.0, 0.5, 0.25)
-    messaging = st.number_input("Messaging",      0.0, 24.0, 2.0, 0.25)
+# ── PREDICTION ───────────────────────────────────────────────────────────
+if st.button("🔍 Predict Well-Being Class"):
+    # build DF in the exact column order your model needs
+    user_df = pd.DataFrame([{
+        "Daily Social Media Time (hrs)": sm_time,
+        "Daily Entertainment Time (hrs)": ent_time,
+        "Screen Time (hrs)":               screen,
+        "Average Sleep Time (hrs)":        sleep,
+        "Physical Activity Time (hrs)":     activity,
+        "Notifications Received Daily":     notifications
+    }], columns=feature_columns)
 
-activity = st.number_input("Physical Activity (hrs)", 0.0, 10.0, 1.0, 0.25, key="act")
-fatigue  = st.slider("Social Media Fatigue (1‑10)", 1, 10, 5)
+    probs = model.predict_proba(user_df)
+    # apply per-class thresholds
+    pred = np.where(
+        (probs < thresholds).all(axis=1),
+        probs.argmax(axis=1),
+        (probs >= thresholds).argmax(axis=1)
+    )[0]
 
-# Derived features
-total_hours = sm_time + video + gaming + messaging
-screen_time = total_hours  # treat combined usage as screen time
-overuse_flag_num = 1 if total_hours > 8 else 0
-overuse_text = "Overuse" if overuse_flag_num else "Normal"
+    label = CLASS_LABELS.get(pred, "Unknown")
+    st.subheader(f"Predicted Class: **{label}**")
 
-st.markdown(f"**Total Digital Activity:** `{total_hours:.2f} h`  —  Flag: **{overuse_text}**")
+    # advice based on overuse
+    if overuse:
+        st.warning("Your screen time is high—consider limiting it to under 8 h/day.")
+    else:
+        st.success("Your screen time is within a healthy range. 👍")
 
-if st.button("🔍 Predict Well‑Being Class", type="primary"):
-    # Construct the exact feature set expected by the model
-    user_df = pd.DataFrame({
-        "Daily Social Media Time (hrs)": [sm_time],
-        "Screen Time (hrs)":               [screen_time],
-        "Physical Activity Time (hrs)":    [activity],
-        "Social Media Fatigue Level (scale 1-10)": [fatigue],
-        "Total Digital Activity (hrs)":    [total_hours],
-        "Digital Overuse":                 [overuse_flag_num]
-    })
-
-    pred_score = float(pipe.predict(user_df)[0] + 1)
-    score = max(1.0, min(10.0, pred_score))
-    label = score_to_class(score)
-    colour = CLASS_MAP.get(label, (None, None, "#808080"))[2]
-
-    st.markdown(f"### Predicted Score : **{score:.1f} / 10**")
-    st.markdown(f"<span style='font-size:32px; color:{colour};'>Class : {label}</span>", unsafe_allow_html=True)
-    st.info(advice(label))
-
-st.divider()
+    # advice based on predicted class
+    st.markdown(f"**Advice:**  \n{ADVICE_BY_CLASS.get(label,'')}")

@@ -1,0 +1,16 @@
+{
+  "class_weight_1": 1.6,
+  "thresholds": [
+    0.4,
+    0.55,
+    0.35
+  ],
+  "features": [
+    "Daily Social Media Time (hrs)",
+    "Daily Entertainment Time (hrs)",
+    "Screen Time (hrs)",
+    "Average Sleep Time (hrs)",
+    "Physical Activity Time (hrs)",
+    "Notifications Received Daily"
+  ]
+}
